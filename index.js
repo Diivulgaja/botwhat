@@ -9,7 +9,7 @@ const qrcode = require('qrcode-terminal');
 // =====================
 // CONFIGURAÇÕES
 // =====================
-const ADMIN_NUMBER = '5511999999999@c.us'; // <--- SEU NÚMERO AQUI
+const ADMIN_NUMBER = '554899689199@c.us'; // <--- SEU NÚMERO AQUI
 const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 Minutos para resetar conversa abandonada
 const SILENCE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 Horas de silêncio após finalizar (para o humano atender)
 
@@ -221,3 +221,4 @@ client.on('message_create', async (msg) => {
 });
 
 client.initialize();
+
