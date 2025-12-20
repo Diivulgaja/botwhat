@@ -1,244 +1,215 @@
 /**
- * Bot WhatsApp Profissional - Agência Divulga Já
- * Com controle de estado de conversa (SEM IA)
+ * Bot WhatsApp Profissional 2.0 - Agência Divulga Já
+ * Melhorias: Navegação, Notificação Admin, Envio de Mídia e Timeout
  */
 
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
 // =====================
-// MEMÓRIA DE CONVERSA
+// CONFIGURAÇÕES
 // =====================
-const userStates = {};
+const ADMIN_NUMBER = '5511999999999@c.us'; // <--- COLOQUE SEU NÚMERO AQUI (com 55 + DDD)
+const TIMEOUT_MS = 10 * 60 * 1000; // 10 Minutos para resetar conversa inativa
 
-// =====================
-// CLIENTE WHATSAPP
-// =====================
+// Memória
+const userStates = {}; 
+// Estrutura: { stage: string, timestamp: number, name: string, history: [] }
+
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Usa o Chrome do Docker se existir
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Importante para evitar erro de memória
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process', 
-            '--disable-gpu'
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     }
 });
 
+client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
+client.on('ready', () => console.log('✅ Bot Turbinado ONLINE!'));
 
 // =====================
-// EVENTOS DE CONEXÃO
+// FUNÇÕES AUXILIARES
 // =====================
-client.on('qr', (qr) => {
-    console.log('📲 Escaneie o QR Code abaixo:');
-    qrcode.generate(qr, { small: true });
-});
 
-client.on('ready', () => {
-    console.log('✅ WhatsApp conectado! Bot ONLINE.');
-});
+// Reseta o estado do usuário
+const resetUser = (userId) => {
+    delete userStates[userId];
+};
 
-// =====================
-// FUNÇÃO AUXILIAR
-// =====================
-const sendProfessionalResponse = async (chat, content, delay = 1200) => {
+// Envia resposta simulando digitação
+const sendResponse = async (chat, text, delay = 1000) => {
     await chat.sendStateTyping();
-    setTimeout(async () => {
-        await chat.sendMessage(content);
-    }, delay);
+    return new Promise(resolve => setTimeout(async () => {
+        await chat.sendMessage(text);
+        resolve();
+    }, delay));
+};
+
+// Notifica o dono do bot (Você)
+const notifyAdmin = async (clientData, resumo) => {
+    const text = `🚨 *NOVO LEAD FINALIZADO* 🚨\n\n` +
+                 `👤 *Nome:* ${clientData.name}\n` +
+                 `📱 *WhatsApp:* https://wa.me/${clientData.id.replace('@c.us', '')}\n` +
+                 `📂 *Interesse:* ${resumo}\n` +
+                 `⏰ *Hora:* ${new Date().toLocaleTimeString()}`;
+    
+    try {
+        await client.sendMessage(ADMIN_NUMBER, text);
+    } catch (e) {
+        console.error('Erro ao notificar admin:', e);
+    }
 };
 
 // =====================
-// LISTENER DE MENSAGENS
+// LÓGICA PRINCIPAL
 // =====================
 client.on('message_create', async (msg) => {
+    if (msg.fromMe) return;
+    const chat = await msg.getChat();
+    if (chat.isGroup) return;
+
+    const userId = msg.from;
+    const body = msg.body.trim();
+    
+    // 1. CHECAGEM DE TIMEOUT (Se demorou muito, reseta)
+    if (userStates[userId]) {
+        const timeDiff = Date.now() - userStates[userId].timestamp;
+        if (timeDiff > TIMEOUT_MS) {
+            resetUser(userId);
+            // Opcional: Avisar que resetou
+            // await chat.sendMessage('🕒 Sua sessão expirou. Vamos começar de novo?');
+        }
+    }
+
+    // Identificar Nome
+    let contactName = 'Visitante';
     try {
-        if (msg.fromMe) return;
+        const contact = await msg.getContact();
+        contactName = contact.pushname || contact.name || 'Visitante';
+    } catch {}
 
-        const chat = await msg.getChat();
-        if (chat.isGroup) return;
+    // Inicializa estado se não existir
+    if (!userStates[userId]) {
+        userStates[userId] = { stage: 'START', timestamp: Date.now(), name: contactName, id: userId };
+    } else {
+        userStates[userId].timestamp = Date.now(); // Atualiza tempo
+    }
 
-        const messageBody = msg.body.toLowerCase().trim();
-        console.log('📩 Mensagem recebida:', messageBody);
+    const state = userStates[userId].stage;
 
-        let contactName = 'parceiro(a)';
-        try {
-            const contact = await msg.getContact();
-            const fullName = contact.pushname || contact.name || '';
-            if (fullName) contactName = fullName.split(' ')[0];
-        } catch {}
+    // =====================
+    // COMANDOS GLOBAIS
+    // =====================
+    if (body.toLowerCase() === 'voltar' && state !== 'START') {
+        userStates[userId].stage = 'MENU';
+        return sendResponse(chat, `🔄 Menu Principal:\n\n1️⃣ Marketing Digital\n2️⃣ Sites e Sistemas\n3️⃣ Consultoria\n4️⃣ Já sou Cliente\n5️⃣ Falar com Humano`);
+    }
 
-        // =====================
-        // MENU PRINCIPAL
-        // =====================
-        if (['oi', 'ola', 'olá', 'bom dia', 'boa tarde', 'boa noite', 'menu', 'ajuda'].includes(messageBody)) {
-            userStates[msg.from] = { stage: 'menu' };
+    if (body.toLowerCase() === 'reset' || body.toLowerCase() === 'sair') {
+        resetUser(userId);
+        return sendResponse(chat, 'Conversa encerrada. Diga "Oi" para começar de novo. 👋');
+    }
 
-            return sendProfessionalResponse(
-                chat,
-                `Olá, ${contactName}! 👋\n\n` +
-                `Bem-vindo à *Agência Divulga Já*.\n\n` +
-                `Como podemos te ajudar hoje?\n\n` +
-                `1️⃣ Quero divulgar meu negócio (Marketing Digital)\n` +
-                `2️⃣ Quero criar ou melhorar um site / sistema\n` +
-                `3️⃣ Quero uma consultoria estratégica\n` +
-                `4️⃣ Já sou cliente\n` +
-                `5️⃣ Falar com um especialista`,
-                1000
-            );
+    // =====================
+    // FLUXO DA CONVERSA
+    // =====================
+
+    // 🟢 ESTÁGIO 0: INÍCIO
+    if (state === 'START' || ['oi', 'ola', 'menu'].includes(body.toLowerCase())) {
+        userStates[userId].stage = 'MENU';
+        
+        // Exemplo: Mandar uma imagem de boas-vindas (Descomente se tiver a URL)
+        // const media = await MessageMedia.fromUrl('https://seusite.com/logo.png');
+        // await chat.sendMessage(media, { caption: 'Bem vindo à Agência!' });
+
+        return sendResponse(
+            chat,
+            `Olá, ${contactName}! 👋\n` +
+            `Bem-vindo à *Agência Divulga Já*.\n\n` +
+            `Escolha uma opção (Digite o número):\n\n` +
+            `1️⃣ *Quero Vender Mais* (Marketing)\n` +
+            `2️⃣ *Site ou Sistema Novo*\n` +
+            `3️⃣ *Consultoria*\n` +
+            `4️⃣ *Já sou Cliente*\n` +
+            `5️⃣ *Falar com Humano*`
+        );
+    }
+
+    // 🟢 ESTÁGIO 1: MENU PRINCIPAL
+    if (state === 'MENU') {
+        if (body === '1') {
+            userStates[userId].stage = 'MARKETING';
+            return sendResponse(chat, `🚀 *Marketing Digital*\n\nSeu negócio atende:\n\n1️⃣ Apenas local (Minha cidade)\n2️⃣ Todo o Brasil (Online)\n\n(Digite *Voltar* para o menu)`);
         }
-
-        // =====================
-        // OPÇÃO 1 - MARKETING
-        // =====================
-        if (messageBody === '1' && userStates[msg.from]?.stage === 'menu') {
-            userStates[msg.from] = { stage: 'marketing' };
-
-            return sendProfessionalResponse(
-                chat,
-                `🚀 Perfeito, ${contactName}!\n\n` +
-                `Ajudamos empresas a atrair mais clientes e vender todos os dias.\n\n` +
-                `Seu negócio é:\n` +
-                `1️⃣ Local (cidade/bairro)\n` +
-                `2️⃣ Online\n` +
-                `3️⃣ Ambos`
-            );
+        if (body === '2') {
+            userStates[userId].stage = 'DEV';
+            return sendResponse(chat, `💻 *Desenvolvimento*\n\nO que você precisa?\n\n1️⃣ Site Institucional\n2️⃣ Loja Virtual\n3️⃣ Sistema Personalizado\n\n(Digite *Voltar* para o menu)`);
         }
-
-        // MARKETING - RESPOSTAS
-        if (userStates[msg.from]?.stage === 'marketing' && ['1','2','3'].includes(messageBody)) {
-            userStates[msg.from] = { stage: 'final' };
-
-            return sendProfessionalResponse(
-                chat,
-                `Excelente, ${contactName}! ✅\n\n` +
-                `Com base no seu perfil, um especialista vai entrar em contato para montar a melhor estratégia para você.`
-            );
+        if (body === '3') {
+            userStates[userId].stage = 'CONSULTORIA';
+            return sendResponse(chat, `📊 *Consultoria*\n\nQual o maior problema hoje?\n\n1️⃣ Falta de Clientes\n2️⃣ Processos Bagunçados\n\n(Digite *Voltar* para o menu)`);
         }
-
-        // =====================
-        // OPÇÃO 2 - SITE / SISTEMA
-        // =====================
-        if (messageBody === '2' && userStates[msg.from]?.stage === 'menu') {
-            userStates[msg.from] = { stage: 'site_menu' };
-
-            return sendProfessionalResponse(
-                chat,
-                `💻 Ótima escolha, ${contactName}!\n\n` +
-                `Trabalhamos com:\n` +
-                `• Sites profissionais\n` +
-                `• Lojas virtuais\n` +
-                `• Sistemas sob medida\n` +
-                `• Automações (WhatsApp, bots)\n\n` +
-                `O que você precisa no momento?\n` +
-                `1️⃣ Site institucional\n` +
-                `2️⃣ Loja virtual\n` +
-                `3️⃣ Sistema personalizado\n` +
-                `4️⃣ Ainda não sei`
-            );
+        if (body === '4') {
+            userStates[userId].stage = 'CLIENTE';
+            return sendResponse(chat, `🤝 *Área do Cliente*\n\n1️⃣ 2ª via de Boleto\n2️⃣ Suporte Técnico\n\n(Digite *Voltar* para o menu)`);
         }
-
-        // SITE / SISTEMA - RESPOSTAS
-        if (userStates[msg.from]?.stage === 'site_menu' && ['1','2','3','4'].includes(messageBody)) {
-            userStates[msg.from] = { stage: 'final' };
-
-            const respostas = {
-                '1': 'Perfeito! Vamos criar um site profissional para fortalecer sua presença online.',
-                '2': 'Excelente escolha! Criamos lojas virtuais completas e prontas para vender.',
-                '3': 'Ótima decisão! Desenvolvemos sistemas sob medida para o seu negócio.',
-                '4': 'Sem problema! Um especialista vai te ajudar a definir a melhor solução.'
-            };
-
-            return sendProfessionalResponse(
-                chat,
-                `👌 ${respostas[messageBody]}\n\n` +
-                `Nossa equipa entrará em contato em breve para alinhar os detalhes.`
-            );
+        if (body === '5') {
+            await notifyAdmin(userStates[userId], 'Solicitou Humano no Menu');
+            resetUser(userId);
+            return sendResponse(chat, `✅ Um de nossos atendentes entrará na conversa em breve!`);
         }
+    }
 
-        // =====================
-        // OPÇÃO 3 - CONSULTORIA
-        // =====================
-        if (messageBody === '3' && userStates[msg.from]?.stage === 'menu') {
-            userStates[msg.from] = { stage: 'consultoria' };
+    // 🟢 ESTÁGIO 2: SUB-MENUS E FINALIZAÇÃO
 
-            return sendProfessionalResponse(
-                chat,
-                `📊 Excelente, ${contactName}!\n\n` +
-                `Nossa consultoria ajuda a organizar processos e melhorar resultados.\n\n` +
-                `Qual é seu maior desafio hoje?\n` +
-                `1️⃣ Poucas vendas\n` +
-                `2️⃣ Falta de clientes\n` +
-                `3️⃣ Negócio desorganizado\n` +
-                `4️⃣ Outro`
-            );
-        }
+    // --- MARKETING ---
+    if (state === 'MARKETING' && ['1', '2'].includes(body)) {
+        const tipo = body === '1' ? 'Negócio Local' : 'Negócio Online';
+        await sendResponse(chat, `Perfeito! Entendi que seu foco é *${tipo}*.`);
+        await sendResponse(chat, `✅ Um especialista em Tráfego vai te chamar aqui para apresentar um plano.\n\nAguarde um instante...`, 2000);
+        
+        await notifyAdmin(userStates[userId], `Marketing Digital - ${tipo}`);
+        resetUser(userId);
+        return;
+    }
 
-        // CONSULTORIA - RESPOSTAS
-        if (userStates[msg.from]?.stage === 'consultoria' && ['1','2','3','4'].includes(messageBody)) {
-            userStates[msg.from] = { stage: 'final' };
+    // --- DESENVOLVIMENTO ---
+    if (state === 'DEV' && ['1', '2', '3'].includes(body)) {
+        const servicos = {'1': 'Site', '2': 'Loja Virtual', '3': 'Sistema'};
+        const escolha = servicos[body];
 
-            return sendProfessionalResponse(
-                chat,
-                `Obrigado por compartilhar, ${contactName}! 👍\n\n` +
-                `Com essa informação, um consultor da nossa equipa entrará em contato para te orientar da melhor forma.`
-            );
-        }
+        await sendResponse(chat, `Ótima escolha! Desenvolvemos *${escolha}s* incríveis.`);
+        // Exemplo: Enviar PDF de portfólio (se tiver URL)
+        // await chat.sendMessage(await MessageMedia.fromUrl('https://seusite.com/portfolio.pdf'));
+        
+        await sendResponse(chat, `📝 Já anotei seu interesse. Nossa equipe de Dev vai entrar em contato.`);
+        
+        await notifyAdmin(userStates[userId], `Desenvolvimento - ${escolha}`);
+        resetUser(userId);
+        return;
+    }
 
-        // =====================
-        // OPÇÃO 4 - JÁ SOU CLIENTE
-        // =====================
-        if (messageBody === '4' && userStates[msg.from]?.stage === 'menu') {
-            userStates[msg.from] = { stage: 'cliente' };
+    // --- CONSULTORIA ---
+    if (state === 'CONSULTORIA') {
+        await sendResponse(chat, `Entendido. Vamos te ajudar a organizar a casa. 🏗️`);
+        await notifyAdmin(userStates[userId], `Consultoria - Opção ${body}`);
+        resetUser(userId);
+        return;
+    }
 
-            return sendProfessionalResponse(
-                chat,
-                `🤝 Perfeito, ${contactName}!\n\n` +
-                `Escolha uma opção:\n` +
-                `1️⃣ Suporte técnico\n` +
-                `2️⃣ Financeiro\n` +
-                `3️⃣ Alterações em projeto`
-            );
-        }
+    // --- CLIENTE ---
+    if (state === 'CLIENTE') {
+        await sendResponse(chat, `Certo, encaminhei sua solicitação ao setor responsável.`);
+        await notifyAdmin(userStates[userId], `Cliente Antigo - Opção ${body}`);
+        resetUser(userId);
+        return;
+    }
 
-        if (userStates[msg.from]?.stage === 'cliente' && ['1','2','3'].includes(messageBody)) {
-            userStates[msg.from] = { stage: 'final' };
-
-            return sendProfessionalResponse(
-                chat,
-                `Certo! 📌\n\n` +
-                `Nossa equipa responsável já foi avisada e entrará em contato com você em breve.`
-            );
-        }
-
-        // =====================
-        // OPÇÃO 5 - HUMANO
-        // =====================
-        if (messageBody === '5' && userStates[msg.from]?.stage === 'menu') {
-            userStates[msg.from] = { stage: 'final' };
-
-            return sendProfessionalResponse(
-                chat,
-                `👤 Perfeito, ${contactName}!\n\n` +
-                `Você será atendido por um especialista da *Agência Divulga Já* em instantes.`
-            );
-        }
-
-    } catch (err) {
-        console.error('❌ Erro ao processar mensagem:', err);
+    // SE NÃO ENTENDEU NADA
+    if (state !== 'START') {
+        await chat.sendMessage(`⚠️ Não entendi a opção "${body}".\nDigite o número da opção ou digite *Voltar*.`);
     }
 });
 
-// =====================
-// INICIALIZAÇÃO
-// =====================
-client.initialize().catch(err => {
-    console.error('❌ Falha ao inicializar:', err);
-});
+client.initialize();
