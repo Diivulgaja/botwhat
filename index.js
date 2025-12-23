@@ -1,17 +1,19 @@
 /**
- * Bot WhatsApp Profissional - Agência Divulga Já (Versão Final)
- * Funcionalidades: Menu, Persistência, Notificação Admin e Modo Silencioso com Garantia.
+ * Bot WhatsApp Profissional - Agência Divulga Já (Versão Inteligente)
+ * Funcionalidades: Menu, Persistência, Detecção de Humano e Timeout de 48h.
  */
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
 // ===========================================================
-// ⚙️ CONFIGURAÇÕES (EDITE AQUI)
+// ⚙️ CONFIGURAÇÕES
 // ===========================================================
-const ADMIN_NUMBER = '5548996689199@c.us'; // <--- COLOQUE SEU NÚMERO AQUI (DDD + NÚMERO)
-const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 Minutos para resetar se o cliente sumir
-const SILENCE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 Horas que o bot fica mudo após finalizar
+const ADMIN_NUMBER_RAW = '5548996689199'; 
+const ADMIN_NUMBER = `${ADMIN_NUMBER_RAW}@c.us`;
+
+const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 Minutos (Cliente sumiu)
+const SILENCE_TIMEOUT = 48 * 60 * 60 * 1000; // 48 HORAS (Bot fica mudo após atendimento)
 
 // ===========================================================
 // 🧠 MEMÓRIA E CLIENTE
@@ -19,10 +21,8 @@ const SILENCE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 Horas que o bot fica mudo ap�
 const userStates = {}; 
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ clientId: "divulgaja-bot" }),
     puppeteer: {
-        // Configurações otimizadas para Docker/VPS (Railway/Square Cloud)
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
         headless: true,
         args: [
             '--no-sandbox',
@@ -31,65 +31,66 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--single-process'
         ]
     }
 });
 
-// Eventos de Conexão
+// ===========================================================
+// 📡 EVENTOS DE SISTEMA
+// ===========================================================
 client.on('qr', (qr) => {
     console.log('📲 QR Code gerado! Escaneie abaixo:');
     qrcode.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
-    console.log('✅ Bot ONLINE e pronto para atendimento!');
+    console.log(`✅ Bot ONLINE! Monitorando interações.`);
+    client.sendMessage(ADMIN_NUMBER, '🚀 Bot iniciado com timeout de 48h!');
+});
+
+client.on('disconnected', (reason) => {
+    console.log('❌ Bot desconectado:', reason);
+    client.initialize();
 });
 
 // ===========================================================
-// 🛠️ FUNÇÕES AUXILIARES
+// 🛠️ FUNÇÕES DE CONTROLE
 // ===========================================================
 
-// Ativa o Modo Silencioso (Handoff para Humano)
+// Ativa o modo silencioso (Bot para de responder)
 const setSilentMode = (userId) => {
-    userStates[userId] = { 
-        stage: 'SILENT', 
-        timestamp: Date.now() 
-    };
-    console.log(`🔇 Modo silencioso ativado para: ${userId}`);
+    userStates[userId] = { stage: 'SILENT', timestamp: Date.now() };
+    // console.log(`🔇 Modo silencioso (48h) ativado para: ${userId}`);
 };
 
-// Reseta o usuário (apaga a memória dele)
 const resetUser = (userId) => {
     delete userStates[userId];
 };
 
-// Envia mensagem com delay simulando digitação
-const sendResponse = async (chat, text, delay = 1500) => {
+const sendResponse = async (chat, text, delay = 1000) => {
+    const randomDelay = delay + Math.floor(Math.random() * 500);
     try {
         await chat.sendStateTyping();
         return new Promise(resolve => setTimeout(async () => {
             await chat.sendMessage(text);
             resolve();
-        }, delay));
+        }, randomDelay));
     } catch (err) {
-        console.error('Erro ao enviar mensagem:', err);
+        console.error(`Erro ao enviar msg:`, err);
     }
 };
 
-// Notifica o dono do bot (Admin)
 const notifyAdmin = async (clientData, resumo) => {
-    const text = `🚨 *NOVO LEAD (AÇÃO NECESSÁRIA)* 🚨\n\n` +
+    const text = `🚨 *LEAD QUENTE (DIVULGA JÁ)* 🚨\n\n` +
                  `👤 *Nome:* ${clientData.name}\n` +
-                 `📱 *Link:* https://wa.me/${clientData.id.replace('@c.us', '')}\n` +
-                 `📂 *Assunto:* ${resumo}\n` +
-                 `⚠️ *Bot:* Entrou em modo silencioso. O cliente está aguardando!`;
-    
+                 `📱 *WhatsApp:* https://wa.me/${clientData.id.replace('@c.us', '')}\n` +
+                 `📂 *Interesse:* ${resumo}\n` +
+                 `⚠️ *Status:* Bot pausado por 48h.`;
     try {
         await client.sendMessage(ADMIN_NUMBER, text);
-    } catch (e) {
-        console.error('Erro ao notificar admin:', e);
-    }
+    } catch (e) { console.error('Erro notificando admin:', e); }
 };
 
 // ===========================================================
@@ -97,51 +98,64 @@ const notifyAdmin = async (clientData, resumo) => {
 // ===========================================================
 client.on('message_create', async (msg) => {
     try {
-        if (msg.fromMe) return; // Ignora mensagens enviadas por você
+        // -----------------------------------------------------------
+        // 🛑 DETECÇÃO DE INTERVENÇÃO HUMANA (NOVO)
+        // -----------------------------------------------------------
+        // Se a mensagem for SUA (Admin/Humano), o bot cala a boca para esse cliente.
+        if (msg.fromMe) {
+            const targetId = msg.to; // Para quem você mandou mensagem?
+            
+            // Só ativa se for mensagem para um contato individual (ignora grupos/status)
+            if (targetId.includes('@c.us')) {
+                setSilentMode(targetId); // <--- O PULO DO GATO
+                console.log(`👨‍💻 Intervenção humana detectada! Bot pausado para ${targetId}`);
+            }
+            return; // Encerra aqui, não processa sua própria mensagem.
+        }
+        // -----------------------------------------------------------
+
         const chat = await msg.getChat();
         if (chat.isGroup) return; // Ignora grupos
 
         const userId = msg.from;
         const body = msg.body.trim();
 
-        // -----------------------------------------------------------
-        // 🔒 VERIFICAÇÃO DE MODO SILENCIOSO
-        // -----------------------------------------------------------
+        // 1. Lógica do Modo Silencioso (Verifica se está no castigo de 48h)
         if (userStates[userId] && userStates[userId].stage === 'SILENT') {
-            const timeInSilence = Date.now() - userStates[userId].timestamp;
             
-            // Comando secreto para reativar o bot manualmente: #bot
-            if (body.toLowerCase() === '#bot') {
+            // Se você digitar #bot na conversa, ele acorda na hora
+            if (body.toLowerCase() === '#bot' || body.toLowerCase() === '#voltar') {
                 resetUser(userId);
-                return sendResponse(chat, '🤖 Bot reativado! Como posso ajudar?');
+                return sendResponse(chat, '🤖 Bot reativado! Digite *Menu* para ver as opções.');
             }
 
-            // Se ainda está no tempo de silêncio, o bot ignora a mensagem
+            const timeInSilence = Date.now() - userStates[userId].timestamp;
+            
+            // Se ainda não passou 48h, o bot fica quieto e ignora tudo
             if (timeInSilence < SILENCE_TIMEOUT) {
                 return; 
             } else {
-                // Se passou 24h, o bot volta a funcionar
+                // Passou 48h, reseta e volta a atender se o cliente chamar
                 resetUser(userId);
             }
         }
-        // -----------------------------------------------------------
 
-        // Verifica Inatividade (Timeout)
+        // 2. Timeout de Inatividade (Cliente sumiu no meio do atendimento)
         if (userStates[userId]) {
             const timeDiff = Date.now() - userStates[userId].timestamp;
-            if (timeDiff > INACTIVITY_TIMEOUT) {
-                resetUser(userId); // Reseta silenciosamente para recomeçar do zero na próxima
+            if (timeDiff > INACTIVITY_TIMEOUT && userStates[userId].stage !== 'START') {
+                resetUser(userId); 
             }
         }
 
-        // Identifica o nome do contato
+        // 3. Identificação
         let contactName = 'Visitante';
         try {
             const contact = await msg.getContact();
             contactName = contact.pushname || contact.name || contactName;
         } catch {}
 
-        // Inicializa ou atualiza o estado do usuário
+        // Inicializa Estado se não existir
         if (!userStates[userId]) {
             userStates[userId] = { stage: 'START', timestamp: Date.now(), name: contactName, id: userId };
         } else {
@@ -150,118 +164,74 @@ client.on('message_create', async (msg) => {
 
         const state = userStates[userId].stage;
 
-        // Comando Voltar Global
-        if (body.toLowerCase() === 'voltar' && state !== 'START') {
+        // Comando Voltar
+        if (['voltar', 'inicio', 'menu'].includes(body.toLowerCase()) && state !== 'START') {
             userStates[userId].stage = 'MENU';
             return sendResponse(chat, `🔄 *Menu Principal:*\n\n1️⃣ Marketing Digital\n2️⃣ Sites e Sistemas\n3️⃣ Consultoria\n4️⃣ Já sou Cliente\n5️⃣ Falar com Humano`);
         }
 
-        // ===========================================================
-        // 🟢 FLUXO DE CONVERSA
-        // ===========================================================
+        // --- FLUXOS DE CONVERSA ---
 
-        // ESTÁGIO 0: BOAS-VINDAS
-        if (state === 'START' || ['oi', 'ola', 'olá', 'menu', 'ajuda'].includes(body.toLowerCase())) {
+        // START
+        if (state === 'START' || ['oi', 'ola', 'olá', 'bom dia', 'boa tarde'].includes(body.toLowerCase())) {
             userStates[userId].stage = 'MENU';
             return sendResponse(
                 chat,
                 `Olá, ${contactName}! 👋\n` +
                 `Bem-vindo à *Agência Divulga Já*.\n\n` +
-                `Como podemos alavancar seu negócio hoje?\n\n` +
+                `Como podemos acelerar seu negócio hoje?\n\n` +
                 `1️⃣ *Quero Vender Mais* (Marketing)\n` +
                 `2️⃣ *Site ou Sistema Novo*\n` +
                 `3️⃣ *Consultoria Estratégica*\n` +
-                `4️⃣ *Já sou Cliente*\n` +
+                `4️⃣ *Área do Cliente*\n` +
                 `5️⃣ *Falar com Especialista*`
             );
         }
 
-        // ESTÁGIO 1: MENU PRINCIPAL
+        // MENU PRINCIPAL
         if (state === 'MENU') {
-            if (body === '1') {
-                userStates[userId].stage = 'MARKETING';
-                return sendResponse(chat, `🚀 *Marketing Digital*\n\nQual o alcance do seu negócio?\n\n1️⃣ Negócio Local (Cidade/Bairro)\n2️⃣ Online (E-commerce/Infoproduto)\n\n(Digite *Voltar* para o menu)`);
+            const options = {
+                '1': { stage: 'MARKETING', text: `🚀 *Marketing Digital*\n\nQual seu foco atual?\n\n1️⃣ Tráfego Pago (Ads)\n2️⃣ Redes Sociais\n3️⃣ Automação/Bots\n\n(Digite *Voltar* para o menu)` },
+                '2': { stage: 'DEV', text: `💻 *Desenvolvimento*\n\nO que você precisa?\n\n1️⃣ Site Institucional\n2️⃣ Loja Virtual\n3️⃣ Sistema Personalizado\n\n(Digite *Voltar* para o menu)` },
+                '3': { stage: 'CONSULTORIA', text: `📊 *Consultoria*\n\nQual o desafio?\n\n1️⃣ Estratégia de Vendas\n2️⃣ Processos da Empresa\n\n(Digite *Voltar* para o menu)` },
+                '4': { stage: 'CLIENTE', text: `🤝 *Área do Cliente*\n\n1️⃣ 2ª Via de Boleto\n2️⃣ Suporte Técnico\n\n(Digite *Voltar* para o menu)` },
+                '5': { action: 'HUMAN' }
+            };
+
+            if (options[body]) {
+                if (options[body].action === 'HUMAN') {
+                    await sendResponse(chat, `🔔 Entendido! Chamando um especialista da Divulga Já...`);
+                    await notifyAdmin(userStates[userId], '🚨 Solicitou Humano (URGENTE)');
+                    setSilentMode(userId); // Ativa 48h de silêncio
+                    return;
+                }
+                userStates[userId].stage = options[body].stage;
+                return sendResponse(chat, options[body].text);
             }
-            if (body === '2') {
-                userStates[userId].stage = 'DEV';
-                return sendResponse(chat, `💻 *Desenvolvimento*\n\nO que você precisa?\n\n1️⃣ Site Institucional\n2️⃣ Loja Virtual\n3️⃣ Sistema ou App\n\n(Digite *Voltar* para o menu)`);
-            }
-            if (body === '3') {
-                userStates[userId].stage = 'CONSULTORIA';
-                return sendResponse(chat, `📊 *Consultoria*\n\nQual o maior desafio?\n\n1️⃣ Falta de Clientes\n2️⃣ Organização e Processos\n\n(Digite *Voltar* para o menu)`);
-            }
-            if (body === '4') {
-                userStates[userId].stage = 'CLIENTE';
-                return sendResponse(chat, `🤝 *Área do Cliente*\n\n1️⃣ Financeiro / 2ª Via\n2️⃣ Suporte Técnico\n\n(Digite *Voltar* para o menu)`);
-            }
-            if (body === '5') {
-                // HUMANO DIRETO (Opção 5)
-                await sendResponse(chat, `🔔 *CHAMANDO ATENDENTE...*`);
-                await sendResponse(chat, `✅ *Pronto! Notificação enviada.*\n\nUm de nossos especialistas já viu seu chamado e vai te responder *AGORA MESMO*.\n\nPor favor, aguarde um instante...`, 2000);
+        }
+
+        // SUBMENUS (Finalizadores)
+        if (['MARKETING', 'DEV', 'CONSULTORIA', 'CLIENTE'].includes(state)) {
+            if (['1', '2', '3'].includes(body)) {
+                let service = `${state} - Opção ${body}`;
                 
-                await notifyAdmin(userStates[userId], '🚨 Solicitou Humano com URGÊNCIA');
-                setSilentMode(userId); 
+                await sendResponse(chat, `Perfeito! Excelente escolha. 🎯`);
+                await sendResponse(chat, `📝 Já passei seu contato para nossa equipe técnica.\n\nEm breve, um especialista vai te chamar aqui mesmo.\n\nPor favor, aguarde!`, 1500);
+                
+                await notifyAdmin(userStates[userId], service);
+                setSilentMode(userId); // Ativa 48h de silêncio
                 return;
             }
         }
 
-        // ESTÁGIO 2: FINALIZAÇÕES E GARANTIA
-
-        // --- MARKETING ---
-        if (state === 'MARKETING' && ['1', '2'].includes(body)) {
-            const tipo = body === '1' ? 'Local' : 'Online';
-            
-            await sendResponse(chat, `Entendido. Marketing ${tipo} é nossa especialidade. 🎯`);
-            await sendResponse(chat, `🚨 *ATENÇÃO: Já avisei a equipe!*\n\nSeparei seu atendimento com *PRIORIDADE*. Um consultor está analisando seu perfil agora e vai te chamar em instantes.\n\nFique atento aqui no chat!`, 2000);
-            
-            await notifyAdmin(userStates[userId], `Marketing - ${tipo} (PRIORIDADE)`);
-            setSilentMode(userId);
-            return;
-        }
-
-        // --- DEV (SITES/SISTEMAS) ---
-        if (state === 'DEV' && ['1', '2', '3'].includes(body)) {
-            const itens = {'1': 'Site', '2': 'Loja Virtual', '3': 'Sistema'};
-            
-            await sendResponse(chat, `Ótima escolha! Temos cases incríveis de ${itens[body]}.`);
-            await sendResponse(chat, `✅ *Solicitação Confirmada!*\n\nNosso gerente de projetos acabou de receber seu contato. Ele vai te responder *agora* para pegar mais detalhes.\n\nNão feche a conversa, ok?`, 2000);
-            
-            await notifyAdmin(userStates[userId], `Dev - ${itens[body]} (PRIORIDADE)`);
-            setSilentMode(userId);
-            return;
-        }
-
-        // --- CONSULTORIA ---
-        if (state === 'CONSULTORIA' && ['1', '2'].includes(body)) {
-            await sendResponse(chat, `Certo. Vamos organizar isso.`);
-            await sendResponse(chat, `🔔 *Consultor Acionado.*\n\nEnviei um alerta para o especialista de plantão. Ele entrará na conversa em breve para te orientar.\n\nAguarde um momento...`, 2000);
-            
-            await notifyAdmin(userStates[userId], `Consultoria - Opção ${body}`);
-            setSilentMode(userId);
-            return;
-        }
-
-        // --- CLIENTE (SUPORTE) ---
-        if (state === 'CLIENTE' && ['1', '2'].includes(body)) {
-            const setor = body === '1' ? 'Financeiro' : 'Suporte Técnico';
-            
-            await sendResponse(chat, `Entendido.`);
-            await sendResponse(chat, `🎟️ *Ticket Aberto: ${setor}*\n\nA equipe responsável já está com seu contato na tela. Em instantes alguém fala com você para resolver.\n\nObrigado por aguardar!`, 2000);
-            
-            await notifyAdmin(userStates[userId], `Cliente - ${setor}`);
-            setSilentMode(userId);
-            return;
-        }
-
-        // SE NÃO ENTENDEU A OPÇÃO
-        if (state !== 'START' && state !== 'SILENT') {
-            await chat.sendMessage(`⚠️ Opção inválida. Por favor, digite apenas o *número* da opção desejada.`);
+        // Tratamento de erro (só responde se não estiver silenciado)
+        if (state !== 'START') {
+            await chat.sendMessage(`⚠️ Opção inválida. Digite o *número* ou *Voltar*.`);
         }
 
     } catch (err) {
-        console.error('Erro crítico:', err);
+        console.error('Erro no loop:', err);
     }
 });
 
-// Inicialização
-client.initialize().catch(err => console.error('Erro de inicialização:', err));
+client.initialize();
