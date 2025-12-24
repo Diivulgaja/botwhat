@@ -1,19 +1,16 @@
 {
-  "name": "api2.0",
-  "version": "1.0.0",
+  "name": "bot-divulga-ja",
+  "version": "2.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "puppeteer": "^19.11.1",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.23.0"
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#webpack-exodus"
   },
-  "description": ""
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
