@@ -1,19 +1,19 @@
 /**
- * Bot WhatsApp Profissional - Agência Divulga Já (Versão Final v3)
- * Funcionalidades: Menu, Persistência, Detecção de Humano, Timeout 48h e Gatilhos de Anúncios.
+ * Bot WhatsApp Profissional - Agência Divulga Já (Versão Blindada v4.0)
+ * Correções: Erro de LID (Crash), Timeout 48h, Detecção Humana e Gatilhos de Anúncios.
  */
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
 // ===========================================================
-// ⚙️ CONFIGURAÇÕES
+// ⚙️ CONFIGURAÇÕES (EDITE AQUI)
 // ===========================================================
 const ADMIN_NUMBER_RAW = '5548996689199'; 
 const ADMIN_NUMBER = `${ADMIN_NUMBER_RAW}@c.us`;
 
-const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 Minutos (Cliente sumiu)
-const SILENCE_TIMEOUT = 48 * 60 * 60 * 1000; // 48 HORAS (Bot fica mudo após atendimento)
+const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 Minutos (Reset por inatividade)
+const SILENCE_TIMEOUT = 48 * 60 * 60 * 1000; // 48 HORAS (Bot fica mudo após intervenção/finalização)
 
 // ===========================================================
 // 🧠 MEMÓRIA E CLIENTE
@@ -21,7 +21,10 @@ const SILENCE_TIMEOUT = 48 * 60 * 60 * 1000; // 48 HORAS (Bot fica mudo após at
 const userStates = {}; 
 
 const client = new Client({
+    // Salva a sessão para não pedir QR Code ao reiniciar
     authStrategy: new LocalAuth({ clientId: "divulgaja-bot" }),
+    
+    // Configurações Otimizadas para Discloud/Docker
     puppeteer: {
         headless: true,
         args: [
@@ -45,20 +48,35 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
+// ✅ CORREÇÃO DO ERRO DE "NO LID" AQUI
 client.on('ready', () => {
-    console.log(`✅ Bot ONLINE! Monitorando interações.`);
-    client.sendMessage(ADMIN_NUMBER, '🚀 Bot iniciado com suporte a Leads de Anúncios!');
+    console.log(`✅ Bot ONLINE! Sistema pronto.`);
+
+    // Aguarda 5 segundos para garantir que o WhatsApp carregou os contatos antes de tentar enviar mensagem
+    setTimeout(async () => {
+        try {
+            // Verifica se o número do Admin é válido antes de enviar
+            if (ADMIN_NUMBER_RAW.length > 10) {
+                await client.sendMessage(ADMIN_NUMBER, '🚀 Bot Divulga Já iniciado com sucesso!\nModo: Produção (Discloud)');
+                console.log('📨 Aviso enviado ao Admin.');
+            }
+        } catch (err) {
+            // Se der erro ao avisar o admin, apenas loga no console e NÃO derruba o bot
+            console.error('⚠️ Aviso: O bot está online, mas falhou ao enviar msg para o Admin (Erro LID/Contato). O funcionamento segue normal.');
+        }
+    }, 5000); 
 });
 
 client.on('disconnected', (reason) => {
     console.log('❌ Bot desconectado:', reason);
-    client.initialize();
+    client.initialize(); // Tenta reconectar automaticamente
 });
 
 // ===========================================================
 // 🛠️ FUNÇÕES DE CONTROLE
 // ===========================================================
 
+// Ativa o modo silencioso (Bot para de responder)
 const setSilentMode = (userId) => {
     userStates[userId] = { stage: 'SILENT', timestamp: Date.now() };
 };
@@ -76,7 +94,7 @@ const sendResponse = async (chat, text, delay = 1000) => {
             resolve();
         }, randomDelay));
     } catch (err) {
-        console.error(`Erro ao enviar msg:`, err);
+        console.error(`Erro ao enviar msg para ${chat.id._serialized}:`, err.message);
     }
 };
 
@@ -88,7 +106,7 @@ const notifyAdmin = async (clientData, resumo) => {
                  `⚠️ *Status:* Bot pausado por 48h.`;
     try {
         await client.sendMessage(ADMIN_NUMBER, text);
-    } catch (e) { console.error('Erro notificando admin:', e); }
+    } catch (e) { console.error('Erro notificando admin:', e.message); }
 };
 
 // ===========================================================
@@ -96,36 +114,47 @@ const notifyAdmin = async (clientData, resumo) => {
 // ===========================================================
 client.on('message_create', async (msg) => {
     try {
-        // 1. DETECÇÃO DE HUMANO (VOCÊ FALANDO)
+        // -----------------------------------------------------------
+        // 🛑 1. DETECÇÃO DE INTERVENÇÃO HUMANA (VOCÊ FALANDO)
+        // -----------------------------------------------------------
         if (msg.fromMe) {
             const targetId = msg.to; 
+            // Se você mandou mensagem para um contato privado, o bot para de responder ele
             if (targetId.includes('@c.us')) {
                 setSilentMode(targetId); 
-                console.log(`👨‍💻 Intervenção humana! Bot pausado para ${targetId}`);
+                console.log(`👨‍💻 Intervenção humana detectada! Bot pausado para ${targetId}`);
             }
-            return; 
+            return; // Encerra aqui
         }
+        // -----------------------------------------------------------
 
         const chat = await msg.getChat();
-        if (chat.isGroup) return; 
+        if (chat.isGroup) return; // Ignora grupos
 
         const userId = msg.from;
         const body = msg.body.trim();
 
-        // 2. MODO SILENCIOSO / CASTIGO 48H
+        // 2. MODO SILENCIOSO (Verifica se está no castigo de 48h)
         if (userStates[userId] && userStates[userId].stage === 'SILENT') {
+            
+            // Comandos para reativar manualmente
             if (body.toLowerCase() === '#bot' || body.toLowerCase() === '#voltar') {
                 resetUser(userId);
                 return sendResponse(chat, '🤖 Bot reativado! Digite *Menu* para ver as opções.');
             }
 
             const timeInSilence = Date.now() - userStates[userId].timestamp;
-            if (timeInSilence < SILENCE_TIMEOUT) return; 
             
-            resetUser(userId); // Acabou o tempo de silêncio
+            // Se ainda não passou 48h, o bot fica quieto
+            if (timeInSilence < SILENCE_TIMEOUT) {
+                return; 
+            } else {
+                // Passou 48h, reseta
+                resetUser(userId);
+            }
         }
 
-        // 3. TIMEOUT DE INATIVIDADE
+        // 3. TIMEOUT DE INATIVIDADE (Cliente parou de responder)
         if (userStates[userId]) {
             const timeDiff = Date.now() - userStates[userId].timestamp;
             if (timeDiff > INACTIVITY_TIMEOUT && userStates[userId].stage !== 'START') {
@@ -133,13 +162,14 @@ client.on('message_create', async (msg) => {
             }
         }
 
-        // 4. IDENTIFICAÇÃO
+        // 4. IDENTIFICAÇÃO DO NOME
         let contactName = 'Visitante';
         try {
             const contact = await msg.getContact();
             contactName = contact.pushname || contact.name || contactName;
         } catch {}
 
+        // Inicializa Estado
         if (!userStates[userId]) {
             userStates[userId] = { stage: 'START', timestamp: Date.now(), name: contactName, id: userId };
         } else {
@@ -148,17 +178,16 @@ client.on('message_create', async (msg) => {
 
         const state = userStates[userId].stage;
 
-        // --- GATILHOS DE INÍCIO (AQUI ESTÁ A MUDANÇA) ---
-        // Lista de frases que ativam o bot
+        // --- GATILHOS DE INÍCIO E ANÚNCIOS ---
         const triggers = [
             'oi', 'ola', 'olá', 'bom dia', 'boa tarde', 'boa noite', 'começar', 'menu',
-            'olá, gostaria de mais informações', // Frase exata
-            'gostaria de mais informações',      // Variação curta
-            'tenho interesse',                   // Variação comum
-            'como funciona'                      // Variação comum
+            'olá, gostaria de mais informações', 
+            'gostaria de mais informações',
+            'tenho interesse',
+            'como funciona',
+            'quero saber mais'
         ];
 
-        // Verifica se a mensagem é um gatilho
         const isTrigger = triggers.some(t => body.toLowerCase().includes(t));
 
         if ((state === 'START' || isTrigger) && state !== 'SILENT') {
@@ -176,7 +205,7 @@ client.on('message_create', async (msg) => {
             );
         }
 
-        // --- MENU E FLUXOS ---
+        // --- MENU PRINCIPAL ---
         if (state === 'MENU') {
             const options = {
                 '1': { stage: 'MARKETING', text: `🚀 *Marketing Digital*\n\nQual seu foco atual?\n\n1️⃣ Tráfego Pago (Ads)\n2️⃣ Redes Sociais\n3️⃣ Automação/Bots\n\n(Digite *Voltar* para o menu)` },
@@ -198,7 +227,7 @@ client.on('message_create', async (msg) => {
             }
         }
 
-        // FINALIZADORES
+        // --- FINALIZADORES (Submenus) ---
         if (['MARKETING', 'DEV', 'CONSULTORIA', 'CLIENTE'].includes(state)) {
             if (['1', '2', '3'].includes(body)) {
                 let service = `${state} - Opção ${body}`;
@@ -212,18 +241,19 @@ client.on('message_create', async (msg) => {
             }
         }
 
-        // COMANDO VOLTAR (GLOBAL)
+        // COMANDO VOLTAR
         if (['voltar', 'inicio', 'início'].includes(body.toLowerCase()) && state !== 'START') {
             userStates[userId].stage = 'MENU';
             return sendResponse(chat, `🔄 *Menu Principal:*\n\n1️⃣ Marketing Digital\n2️⃣ Sites e Sistemas\n3️⃣ Consultoria\n4️⃣ Já sou Cliente\n5️⃣ Falar com Humano`);
         }
 
+        // TRATAMENTO DE OPÇÃO INVÁLIDA
         if (state !== 'START' && state !== 'SILENT') {
-            await chat.sendMessage(`⚠️ Opção inválida. Digite o *número* ou *Voltar*.`);
+            await chat.sendMessage(`⚠️ Opção inválida. Digite o *número* da opção ou *Voltar*.`);
         }
 
     } catch (err) {
-        console.error('Erro no loop:', err);
+        console.error('Erro crítico no fluxo:', err);
     }
 });
 
